@@ -4,13 +4,13 @@ from flask import Flask
 from threading import Thread
 import json
 import os
-import re
+import base64
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "✅ Payout Bot работает!"
+    return "✅ Бот с браузером работает!"
 
 def run():
     app.run(host='0.0.0.0', port=10000)
@@ -20,10 +20,182 @@ Thread(target=run).start()
 # ===== ТВОИ ДАННЫЕ =====
 TOKEN = '8466299743:AAGTJxAtDX_O-J4rdzV1VKIcgNLCzQ75jlA'
 CHAT_ID = 6951775511
+BROWSERLESS_KEY = '2U63bRUrQjg7HY44e0b1bcc2197284a881f89dff0bcf1927a'
 SITE_LOGIN = 'mottik'
 SITE_PASSWORD = 'motttikrosplat!'
-SITE_URL = 'https://trade.rosplat.cash'
 # =======================
+
+# Куки с твоего браузера
+COOKIES = [
+    {'name': 'KH12OLAy2GRlhjYu', 'value': 'rXLPRgp7mMkvynWq'},
+    {'name': 'hruiS5hV67zLL85TFWWP', 'value': 'q23hgOKZvORSOO8t'},
+    {'name': '5.253.31.92', 'value': '1772776156'},
+]
+
+def send_telegram(text):
+    """Отправка текстового сообщения"""
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": text}
+        requests.post(url, json=data)
+        print(f"✅ {text[:30]}")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+
+def send_telegram_photo(photo_base64):
+    """Отправка фото в Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+        
+        # Декодируем base64 в бинарные данные
+        photo_data = base64.b64decode(photo_base64)
+        
+        # Отправляем как файл
+        files = {'photo': ('screenshot.jpg', photo_data, 'image/jpeg')}
+        data = {'chat_id': CHAT_ID}
+        
+        response = requests.post(url, files=files, data=data)
+        if response.status_code == 200:
+            print("✅ Скриншот отправлен")
+        else:
+            print(f"❌ Ошибка отправки фото: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Ошибка отправки фото: {e}")
+
+def get_updates(offset=None):
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+        params = {"timeout": 30}
+        if offset:
+            params["offset"] = offset
+        r = requests.get(url, params=params)
+        return r.json()
+    except:
+        return {"result": []}
+
+def check_site_with_browser():
+    """Запускаем браузер в облаке и делаем скриншот"""
+    try:
+        # Код для выполнения в браузере
+        browser_code = """
+        const puppeteer = require('puppeteer-core');
+        
+        async function main() {
+            const browser = await puppeteer.connect({
+                browserWSEndpoint: 'wss://chrome.browserless.io?token=' + process.env.KEY
+            });
+            
+            const page = await browser.newPage();
+            
+            // Устанавливаем куки
+            const cookies = JSON.parse(process.env.COOKIES);
+            await page.setCookie(...cookies);
+            
+            console.log('Перехожу на страницу выплат...');
+            await page.goto('https://trade.rosplat.cash/dashboard/payoutrequests/pending', {
+                waitUntil: 'networkidle2',
+                timeout: 30000
+            });
+            
+            // Ждем загрузки
+            await page.waitForTimeout(5000);
+            
+            // Делаем скриншот всей страницы
+            const screenshot = await page.screenshot({
+                encoding: 'base64',
+                fullPage: true
+            });
+            
+            // Отправляем скриншот обратно
+            console.log('SCREENSHOT:' + screenshot);
+            
+            // Проверяем, есть ли капча
+            const pageText = await page.content();
+            if (pageText.includes('captcha') || pageText.includes('капча')) {
+                console.log('CAPTCHA_DETECTED');
+            }
+            
+            // Собираем выплаты если есть
+            const payouts = await page.evaluate((minSum, maxSum) => {
+                const cards = document.querySelectorAll('div.rounded-\\[15px\\].p-4.space-y-3.mb-4');
+                const results = [];
+                
+                cards.forEach(card => {
+                    const text = card.innerText;
+                    const idMatch = text.match(/ID[\\s:]+(\\d+)/);
+                    const sumMatch = text.match(/Сумма[\\s:]+([\\d\\s]+)₽/);
+                    
+                    if (idMatch && sumMatch) {
+                        const id = idMatch[1];
+                        const sum = parseInt(sumMatch[1].replace(/\\s/g, ''));
+                        
+                        if (sum >= minSum && sum <= maxSum) {
+                            results.push({id, sum});
+                        }
+                    }
+                });
+                
+                return results;
+            }, parseInt(process.env.MIN_SUM), parseInt(process.env.MAX_SUM));
+            
+            console.log('PAYOUTS:' + JSON.stringify(payouts));
+            
+            await browser.close();
+            return {screenshot, payouts, hasCaptcha: pageText.includes('captcha')};
+        }
+        
+        main();
+        """
+        
+        # Отправляем в browserless
+        response = requests.post(
+            'https://chrome.browserless.io/function',
+            json={
+                'code': browser_code,
+                'context': {
+                    'KEY': BROWSERLESS_KEY,
+                    'COOKIES': json.dumps(COOKIES),
+                    'MIN_SUM': str(settings['min_sum']),
+                    'MAX_SUM': str(settings['max_sum'])
+                }
+            },
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            # Ищем скриншот в выводе
+            output = result.get('stdout', '')
+            
+            # Парсим вывод
+            screenshot_data = None
+            payouts_data = []
+            
+            for line in output.split('\n'):
+                if line.startswith('SCREENSHOT:'):
+                    screenshot_data = line.replace('SCREENSHOT:', '')
+                elif line.startswith('PAYOUTS:'):
+                    try:
+                        payouts_data = json.loads(line.replace('PAYOUTS:', ''))
+                    except:
+                        pass
+                elif 'CAPTCHA_DETECTED' in line:
+                    send_telegram("⚠️ Обнаружена капча на сайте!")
+            
+            # Отправляем скриншот если есть
+            if screenshot_data:
+                send_telegram_photo(screenshot_data)
+                send_telegram("📸 Скриншот страницы отправлен")
+            
+            return payouts_data
+        else:
+            send_telegram(f"❌ Ошибка browserless: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        send_telegram(f"❌ Ошибка: {str(e)[:50]}")
+        return []
 
 # Настройки
 settings = {
@@ -32,189 +204,52 @@ settings = {
     'active': True
 }
 
-# Загружаем настройки
-if os.path.exists('settings.json'):
-    with open('settings.json', 'r') as f:
-        settings.update(json.load(f))
-
-# Загружаем принятые ID
 accepted_ids = set()
 if os.path.exists('accepted.txt'):
     with open('accepted.txt', 'r') as f:
         accepted_ids = set(f.read().splitlines())
 
-def send_telegram(text):
-    """Отправка сообщения в Telegram"""
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = {
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-        requests.post(url, json=data)
-        print(f"✅ {text[:50]}")
-    except Exception as e:
-        print(f"❌ Ошибка отправки: {e}")
-
-def get_updates(offset=None):
-    """Получение новых сообщений"""
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-        params = {"timeout": 30}
-        if offset:
-            params["offset"] = offset
-        response = requests.get(url, params=params)
-        return response.json()
-    except:
-        return {"result": []}
-
-def save_settings():
-    """Сохранение настроек"""
-    with open('settings.json', 'w') as f:
-        json.dump(settings, f)
-
-def login_to_site():
-    """Вход на сайт"""
-    session = requests.Session()
-    try:
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        })
-        
-        # Получаем страницу логина
-        login_page = session.get(f'{SITE_URL}/login')
-        
-        # Ищем CSRF токен
-        csrf_match = re.search(r'name="_token".*?value="([^"]+)"', login_page.text)
-        csrf_token = csrf_match.group(1) if csrf_match else ''
-        
-        # Данные для входа
-        login_data = {
-            'login': SITE_LOGIN,
-            'password': SITE_PASSWORD,
-            '_token': csrf_token,
-        }
-        
-        # Отправляем POST запрос
-        result = session.post(f'{SITE_URL}/login', data=login_data, allow_redirects=True)
-        
-        # Проверяем успешность
-        if 'dashboard' in result.url or 'payout' in result.text:
-            print("✅ Успешный вход на сайт")
-            return session
-        else:
-            print("❌ Ошибка входа на сайт")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Ошибка при входе: {e}")
-        return None
-
-def check_payouts(session):
-    """Проверка выплат на сайте"""
-    try:
-        response = session.get(f'{SITE_URL}/dashboard/payoutrequests/pending')
-        
-        # Ищем выплаты
-        payouts = []
-        
-        # Регулярные выражения для поиска
-        id_matches = re.findall(r'ID[:\s]*(\d+)', response.text)
-        sum_matches = re.findall(r'Сумма[:\s]*([\d\s]+)₽', response.text)
-        
-        for i, payout_id in enumerate(id_matches):
-            if i < len(sum_matches):
-                sum_str = sum_matches[i].replace(' ', '')
-                try:
-                    payout_sum = int(sum_str)
-                    if settings['min_sum'] <= payout_sum <= settings['max_sum']:
-                        payouts.append({
-                            'id': payout_id,
-                            'sum': payout_sum
-                        })
-                except:
-                    continue
-                    return payouts
-        
-    except Exception as e:
-        print(f"❌ Ошибка проверки: {e}")
-        return []
-
-def accept_payout(session, payout_id):
-    """Принятие выплаты"""
-    try:
-        url = f'{SITE_URL}/dashboard/payoutrequests/accept/{payout_id}'
-        result = session.post(url)
-        return result.status_code == 200
-    except Exception as e:
-        print(f"❌ Ошибка принятия: {e}")
-        return False
-
 def process_command(text):
-    """Обработка команд"""
-    global settings, accepted_ids
-    
     cmd = text.lower().strip()
     
     if cmd == '/start':
-        send_telegram("""🤖 Бот для выплат запущен!
+        send_telegram("""🤖 Бот с браузером готов!
 
-Доступные команды:
-/status - текущий статус
+Команды:
+/status - статус
+/test - проверить сайт и получить скриншот
 /on - включить мониторинг
-/off - выключить мониторинг
-/setrange 1000 50000 - диапазон сумм
-/history - история выплат
-/clear - очистить историю
-/test - проверить вход на сайт
+/off - выключить
+/setrange 1000 50000 - диапазон
+/history - история
 /help - помощь""")
     
     elif cmd == '/status':
         status = "🔴 АКТИВЕН" if settings['active'] else "⚫ ОСТАНОВЛЕН"
-        msg = f"""📊 ТЕКУЩИЙ СТАТУС
-        
-Статус: {status}
-💰 Диапазон: {settings['min_sum']} - {settings['max_sum']} ₽
-📋 Принято выплат: {len(accepted_ids)}
-👤 Пользователь: {SITE_LOGIN}"""
-        send_telegram(msg)
+        send_telegram(f"Статус: {status}\nДиапазон: {settings['min_sum']} - {settings['max_sum']}₽\nПринято: {len(accepted_ids)}")
+    
+    elif cmd == '/test':
+        send_telegram("🔄 Запускаю браузер и делаю скриншот...")
+        result = check_site_with_browser()
+        if result:
+            send_telegram(f"✅ Найдено выплат: {len(result)}")
+        else:
+            send_telegram("ℹ️ Выплат не найдено или ошибка")
     
     elif cmd == '/on':
         settings['active'] = True
-        save_settings()
         send_telegram("✅ Мониторинг ВКЛЮЧЕН")
     
     elif cmd == '/off':
         settings['active'] = False
-        save_settings()
         send_telegram("⏸️ Мониторинг ВЫКЛЮЧЕН")
-    
-    elif cmd == '/test':
-        send_telegram("🔄 Проверяю вход на сайт...")
-        session = login_to_site()
-        if session:
-            send_telegram("✅ Вход на сайт успешен!")
-        else:
-            send_telegram("❌ Ошибка входа на сайт")
     
     elif cmd == '/history':
         if len(accepted_ids) == 0:
-            send_telegram("📭 История выплат пуста")
+            send_telegram("📭 История пуста")
         else:
-            last = list(accepted_ids)[-10:]
-            msg = "📋 Последние выплаты:\n"
-            for i, pid in enumerate(reversed(last), 1):
-                msg += f"{i}. ID: {pid}\n"
-            send_telegram(msg)
-    
-    elif cmd == '/clear':
-        accepted_ids.clear()
-        with open('accepted.txt', 'w') as f:
-            f.write('')
-        send_telegram("🗑️ История выплат очищена")
+            last = list(accepted_ids)[-5:]
+            send_telegram("📋 Последние:\n" + "\n".join(last))
     
     elif cmd.startswith('/setrange'):
         try:
@@ -225,86 +260,42 @@ def process_command(text):
                 if min_s <= max_s:
                     settings['min_sum'] = min_s
                     settings['max_sum'] = max_s
-                    save_settings()
-                    send_telegram(f"✅ Диапазон установлен: {min_s} - {max_s} ₽")
-                else:
-                    send_telegram("❌ Минимум не может быть больше максимума")
-            else:
-                send_telegram("❌ Используй: /setrange 1000 50000")
+                    send_telegram(f"✅ Диапазон: {min_s} - {max_s}₽")
         except:
-            send_telegram("❌ Ошибка. Используй: /setrange 1000 50000")
+            send_telegram("❌ Ошибка")
     
     elif cmd == '/help':
-        send_telegram("""📚 СПИСОК КОМАНД:
-        
-/start - приветствие
-/status - статус
-/on - включить
-/off - выключить
-/setrange min max - диапазон
-/history - история
-/clear - очистить
-/test - проверить вход
-/help - помощь""")
-    
-    else:
-        send_telegram(f"❌ Неизвестная команда: {text}\nНапиши /help")
+        send_telegram("/status, /test, /on, /off, /setrange, /history")
 
-# Приветствие
-send_telegram("🚀 Бот перезапущен!\nНапиши /start")
+send_telegram("🚀 Бот с браузером запущен! Отправь /test для скриншота")
 
 # Основной цикл
 last_update_id = 0
-last_site_check = 0
-session = None
 
 while True:
     try:
         # Проверяем команды
         updates = get_updates(last_update_id + 1)
-        
-        if updates and "result" in updates and updates["result"]:
+        if updates and "result" in updates:
             for update in updates["result"]:
                 last_update_id = update["update_id"]
-                
                 if "message" in update and "text" in update["message"]:
-                    text = update["message"]["text"]
                     chat_id = update["message"]["chat"]["id"]
-                    
-                    print(f"📩 Получено: {text} от {chat_id}")
-                    
                     if chat_id == CHAT_ID:
-                        process_command(text)
+                        process_command(update["message"]["text"])
         
-        # Мониторинг сайта
+        # Проверяем сайт
         if settings['active']:
-            current_time = time.time()
-            
-            # Обновляем сессию раз в 10 минут
-            if not session or current_time - last_site_check > 600:
-                session = login_to_site()
-            
-            # Проверяем выплаты раз в 30 секунд
-            if session and current_time - last_site_check > 30:
-                payouts = check_payouts(session)
-                
-                for payout in payouts:
-                    if payout['id'] not in accepted_ids:
-                        if accept_payout(session, payout['id']):
-                            msg = f"""✅ ВЫПЛАТА ПРИНЯТА!
-ID: {payout['id']}
-Сумма: {payout['sum']} ₽"""
-                            send_telegram(msg)
-                            accepted_ids.add(payout['id'])
-                            
-                            with open('accepted.txt', 'w') as f:
-                                f.write('\n'.join(accepted_ids))
-                
-                last_site_check = current_time
-                print(f"🔄 Проверка сайта: {len(payouts)} выплат")
+            payouts = check_site_with_browser()
+            for p in payouts:
+                if p['id'] not in accepted_ids:
+                    accepted_ids.add(p['id'])
+                    send_telegram(f"✅ ПРИНЯТА!\nID: {p['id']}\nСумма: {p['sum']}₽")
+                    with open('accepted.txt', 'w') as f:
+                        f.write('\n'.join(accepted_ids))
         
-        time.sleep(2)
+        time.sleep(60)
         
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        time.sleep(5)
+        print(f"Ошибка: {e}")
+        time.sleep(60)
