@@ -21,7 +21,7 @@ Thread(target=run).start()
 TOKEN = '8466299743:AAGTJxAtDX_O-J4rdzV1VKIcgNLCzQ75jlA'
 CHAT_ID = 6951775511
 SITE_LOGIN = 'mottik'
-SITE_PASSWORD = 'rosplat174work11.'
+SITE_PASSWORD = 'motttikrosplat!.'
 # =======================
 
 # Настройки по умолчанию
