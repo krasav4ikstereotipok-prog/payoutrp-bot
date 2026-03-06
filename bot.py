@@ -22,6 +22,7 @@ TOKEN = '8466299743:AAGTJxAtDX_O-J4rdzV1VKIcgNLCzQ75jlA'
 CHAT_ID = 6951775511
 SITE_LOGIN = 'mottik'
 SITE_PASSWORD = 'motttikrosplat!'
+SITE_URL = 'https://trade.rosplat.cash'
 # =======================
 
 # Настройки
@@ -73,6 +74,105 @@ def save_settings():
     with open('settings.json', 'w') as f:
         json.dump(settings, f)
 
+def login_to_site():
+    """Вход на сайт"""
+    session = requests.Session()
+    try:
+        # Добавляем заголовки как у браузера
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Origin': SITE_URL,
+            'Referer': f'{SITE_URL}/login',
+        })
+        
+        # Получаем страницу логина для CSRF токена
+        login_page = session.get(f'{SITE_URL}/login')
+        
+        # Ищем CSRF токен
+        csrf_match = re.search(r'name="_token".*?value="([^"]+)"', login_page.text)
+        csrf_token = csrf_match.group(1) if csrf_match else ''
+        
+        # Данные для входа
+        login_data = {
+            'login': SITE_LOGIN,
+            'password': SITE_PASSWORD,
+            '_token': csrf_token,
+            'remember': 'on'
+        }
+        
+        # Отправляем POST запрос на вход
+        result = session.post(f'{SITE_URL}/login', data=login_data, allow_redirects=True)
+        
+        # Проверяем успешность входа
+        if 'dashboard' in result.url or 'payoutrequests' in result.text or 'Выйти' in result.text:
+            print("✅ Успешный вход на сайт")
+            return session
+        else:
+            print("❌ Ошибка входа на сайт")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Ошибка при входе: {e}")
+        return None
+
+def check_payouts(session):
+    """Проверка выплат на сайте"""
+    try:
+        # Переходим на страницу выплат
+        response = session.get(f'{SITE_URL}/dashboard/payoutrequests/pending')
+        
+        # Ищем все карточки выплат
+        payouts = []
+        
+        # Ищем ID выплат
+        id_matches = re.findall(r'ID[:\s]*(\d+)', response.text)
+        sum_matches = re.findall(r'Сумма[:\s]*([\d\s]+)₽', response.text)
+        
+        for i, payout_id in enumerate(id_matches):
+            if i < len(sum_matches):
+                # Очищаем сумму от пробелов
+                sum_str = sum_matches[i].replace(' ', '')
+                try:
+                    payout_sum = int(sum_str)
+                    # Проверяем диапазон
+                    if settings['min_sum'] <= payout_sum <= settings['max_sum']:
+                        payouts.append({
+                            'id': payout_id,
+                            'sum': payout_sum
+                        })
+                except:
+                    continue
+        
+        return payouts
+        
+    except Exception as e:
+        print(f"❌ Ошибка проверки выплат: {e}")
+        return []
+
+def accept_payout(session, payout_id):
+    """Принятие выплаты"""
+    try:
+        # Пробуем разные варианты URL для принятия
+        urls = [
+            f'{SITE_URL}/dashboard/payoutrequests/accept/{payout_id}',
+            f'{SITE_URL}/dashboard/payoutrequests/{payout_id}/accept',
+            f'{SITE_URL}/api/payoutrequests/{payout_id}/accept'
+        ]
+        
+        for url in urls:
+            result = session.post(url)
+            if result.status_code == 200:
+                print(f"✅ Выплата {payout_id} принята")
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"❌ Ошибка принятия: {e}")
+        return False
+
 def process_command(text):
     """Обработка команд"""
     global settings, accepted_ids
@@ -89,6 +189,7 @@ def process_command(text):
 /setrange 1000 50000 - установить диапазон сумм
 /history - история выплат
 /clear - очистить историю
+/test - проверить вход на сайт
 /help - помощь""")
     
     elif cmd == '/status':
@@ -98,7 +199,8 @@ def process_command(text):
 Статус: {status}
 💰 Диапазон: {settings['min_sum']} - {settings['max_sum']} ₽
 📋 Принято выплат: {len(accepted_ids)}
-👤 Пользователь: {SITE_LOGIN}"""
+👤 Пользователь: {SITE_LOGIN}
+🌐 Сайт: {SITE_URL}"""
         send_telegram(msg)
     
     elif cmd == '/on':
@@ -110,6 +212,14 @@ def process_command(text):
         settings['active'] = False
         save_settings()
         send_telegram("⏸️ <b>Мониторинг ВЫКЛЮЧЕН</b>")
+    
+    elif cmd == '/test':
+        send_telegram("🔄 Проверяю вход на сайт...")
+        session = login_to_site()
+        if session:
+            send_telegram("✅ Вход на сайт успешен!")
+        else:
+            send_telegram("❌ Ошибка входа на сайт")
     
     elif cmd == '/history':
         if len(accepted_ids) == 0:
@@ -144,7 +254,8 @@ def process_command(text):
                 send_telegram("❌ Используй: /setrange 1000 50000")
         except:
             send_telegram("❌ Ошибка. Используй: /setrange 1000 50000")
-            elif cmd == '/help':
+    
+    elif cmd == '/help':
         send_telegram("""📚 <b>СПИСОК КОМАНД:</b>
         
 /start - приветствие
@@ -154,15 +265,11 @@ def process_command(text):
 /setrange min max - диапазон сумм
 /history - история выплат
 /clear - очистить историю
+/test - проверить вход на сайт
 /help - это сообщение""")
     
     else:
         send_telegram(f"❌ Неизвестная команда: {text}\nНапиши /help")
-
-def check_site():
-    """Проверка сайта (заглушка для теста)"""
-    # Здесь будет реальный код проверки
-    return []
 
 # Приветствие при запуске
 send_telegram("🚀 <b>Бот перезапущен!</b>\nНапиши /start для начала работы")
@@ -170,6 +277,7 @@ send_telegram("🚀 <b>Бот перезапущен!</b>\nНапиши /start �
 # Основной цикл
 last_update_id = 0
 last_site_check = 0
+session = None
 
 while True:
     try:
@@ -192,28 +300,37 @@ while True:
         # Если мониторинг включен - проверяем сайт
         if settings['active']:
             current_time = time.time()
-            if current_time - last_site_check > 60:  # Раз в минуту
-                payouts = check_site()
-                if payouts:
-                    for p in payouts:
-                        if p['id'] not in accepted_ids:
-                            msg = f"""✅ <b>НАЙДЕНА ВЫПЛАТА!</b>
-                            
-ID: {p['id']}
-Сумма: {p['sum']} ₽"""
-                            send_telegram(msg)
-                            accepted_ids.add(p['id'])
-                            
-                            # Сохраняем
-                            with open('accepted.txt', 'w') as f:
-                                f.write('\n'.join(accepted_ids))
-                
-                last_site_check = current_time
-                print("🔄 Проверка сайта выполнена")
+            
+            # Обновляем сессию раз в 10 минут
+            if not session or current_time - last_site_check > 600:
+                session = login_to_site()
+            
+            if session:
+                # Проверяем выплаты раз в 30 секунд
+                if current_time - last_site_check > 30:
+                    payouts = check_payouts(session)
+                    
+                    for payout in payouts:
+                        if payout['id'] not in accepted_ids:
+                            # Пробуем принять выплату
+                            if accept_payout(session, payout['id']):
+                                msg = f"""✅ <b>ВЫПЛАТА ПРИНЯТА!</b>
+                                
+ID: {payout['id']}
+Сумма: {payout['sum']} ₽
+Статус: Успешно"""
+                                send_telegram(msg)
+                                accepted_ids.add(payout['id'])
+                                
+                                # Сохраняем
+                                with open('accepted.txt', 'w') as f:
+                                    f.write('\n'.join(accepted_ids))
+                    
+                    last_site_check = current_time
+                    print(f"🔄 Проверка сайта: найдено {len(payouts)} выплат")
         
-        time.sleep(1)
+        time.sleep(2)
         
     except Exception as e:
         print(f"❌ Ошибка в цикле: {e}")
         time.sleep(5)
-        
