@@ -298,4 +298,4 @@ while True:
         
     except Exception as e:
         print(f"Ошибка: {e}")
-        time.sleep(60)
+        time.sleep(50)
