@@ -78,16 +78,13 @@ def login_to_site():
     """Вход на сайт"""
     session = requests.Session()
     try:
-        # Добавляем заголовки как у браузера
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Origin': SITE_URL,
-            'Referer': f'{SITE_URL}/login',
         })
         
-        # Получаем страницу логина для CSRF токена
+        # Получаем страницу логина
         login_page = session.get(f'{SITE_URL}/login')
         
         # Ищем CSRF токен
@@ -99,14 +96,13 @@ def login_to_site():
             'login': SITE_LOGIN,
             'password': SITE_PASSWORD,
             '_token': csrf_token,
-            'remember': 'on'
         }
         
-        # Отправляем POST запрос на вход
+        # Отправляем POST запрос
         result = session.post(f'{SITE_URL}/login', data=login_data, allow_redirects=True)
         
-        # Проверяем успешность входа
-        if 'dashboard' in result.url or 'payoutrequests' in result.text or 'Выйти' in result.text:
+        # Проверяем успешность
+        if 'dashboard' in result.url or 'payout' in result.text:
             print("✅ Успешный вход на сайт")
             return session
         else:
@@ -120,23 +116,20 @@ def login_to_site():
 def check_payouts(session):
     """Проверка выплат на сайте"""
     try:
-        # Переходим на страницу выплат
         response = session.get(f'{SITE_URL}/dashboard/payoutrequests/pending')
         
-        # Ищем все карточки выплат
+        # Ищем выплаты
         payouts = []
         
-        # Ищем ID выплат
+        # Регулярные выражения для поиска
         id_matches = re.findall(r'ID[:\s]*(\d+)', response.text)
         sum_matches = re.findall(r'Сумма[:\s]*([\d\s]+)₽', response.text)
         
         for i, payout_id in enumerate(id_matches):
             if i < len(sum_matches):
-                # Очищаем сумму от пробелов
                 sum_str = sum_matches[i].replace(' ', '')
                 try:
                     payout_sum = int(sum_str)
-                    # Проверяем диапазон
                     if settings['min_sum'] <= payout_sum <= settings['max_sum']:
                         payouts.append({
                             'id': payout_id,
@@ -144,31 +137,18 @@ def check_payouts(session):
                         })
                 except:
                     continue
-        
-        return payouts
+                    return payouts
         
     except Exception as e:
-        print(f"❌ Ошибка проверки выплат: {e}")
+        print(f"❌ Ошибка проверки: {e}")
         return []
 
 def accept_payout(session, payout_id):
     """Принятие выплаты"""
     try:
-        # Пробуем разные варианты URL для принятия
-        urls = [
-            f'{SITE_URL}/dashboard/payoutrequests/accept/{payout_id}',
-            f'{SITE_URL}/dashboard/payoutrequests/{payout_id}/accept',
-            f'{SITE_URL}/api/payoutrequests/{payout_id}/accept'
-        ]
-        
-        for url in urls:
-            result = session.post(url)
-            if result.status_code == 200:
-                print(f"✅ Выплата {payout_id} принята")
-                return True
-        
-        return False
-        
+        url = f'{SITE_URL}/dashboard/payoutrequests/accept/{payout_id}'
+        result = session.post(url)
+        return result.status_code == 200
     except Exception as e:
         print(f"❌ Ошибка принятия: {e}")
         return False
@@ -180,13 +160,13 @@ def process_command(text):
     cmd = text.lower().strip()
     
     if cmd == '/start':
-        send_telegram("""🤖 <b>Бот для выплат запущен!</b>
+        send_telegram("""🤖 Бот для выплат запущен!
 
 Доступные команды:
 /status - текущий статус
 /on - включить мониторинг
 /off - выключить мониторинг
-/setrange 1000 50000 - установить диапазон сумм
+/setrange 1000 50000 - диапазон сумм
 /history - история выплат
 /clear - очистить историю
 /test - проверить вход на сайт
@@ -194,24 +174,23 @@ def process_command(text):
     
     elif cmd == '/status':
         status = "🔴 АКТИВЕН" if settings['active'] else "⚫ ОСТАНОВЛЕН"
-        msg = f"""📊 <b>ТЕКУЩИЙ СТАТУС</b>
+        msg = f"""📊 ТЕКУЩИЙ СТАТУС
         
 Статус: {status}
 💰 Диапазон: {settings['min_sum']} - {settings['max_sum']} ₽
 📋 Принято выплат: {len(accepted_ids)}
-👤 Пользователь: {SITE_LOGIN}
-🌐 Сайт: {SITE_URL}"""
+👤 Пользователь: {SITE_LOGIN}"""
         send_telegram(msg)
     
     elif cmd == '/on':
         settings['active'] = True
         save_settings()
-        send_telegram("✅ <b>Мониторинг ВКЛЮЧЕН</b>\nБот начинает проверку сайта...")
+        send_telegram("✅ Мониторинг ВКЛЮЧЕН")
     
     elif cmd == '/off':
         settings['active'] = False
         save_settings()
-        send_telegram("⏸️ <b>Мониторинг ВЫКЛЮЧЕН</b>")
+        send_telegram("⏸️ Мониторинг ВЫКЛЮЧЕН")
     
     elif cmd == '/test':
         send_telegram("🔄 Проверяю вход на сайт...")
@@ -226,7 +205,7 @@ def process_command(text):
             send_telegram("📭 История выплат пуста")
         else:
             last = list(accepted_ids)[-10:]
-            msg = "📋 <b>Последние выплаты:</b>\n"
+            msg = "📋 Последние выплаты:\n"
             for i, pid in enumerate(reversed(last), 1):
                 msg += f"{i}. ID: {pid}\n"
             send_telegram(msg)
@@ -256,23 +235,23 @@ def process_command(text):
             send_telegram("❌ Ошибка. Используй: /setrange 1000 50000")
     
     elif cmd == '/help':
-        send_telegram("""📚 <b>СПИСОК КОМАНД:</b>
+        send_telegram("""📚 СПИСОК КОМАНД:
         
 /start - приветствие
-/status - статус бота
-/on - включить мониторинг
-/off - выключить мониторинг
-/setrange min max - диапазон сумм
-/history - история выплат
-/clear - очистить историю
-/test - проверить вход на сайт
-/help - это сообщение""")
+/status - статус
+/on - включить
+/off - выключить
+/setrange min max - диапазон
+/history - история
+/clear - очистить
+/test - проверить вход
+/help - помощь""")
     
     else:
         send_telegram(f"❌ Неизвестная команда: {text}\nНапиши /help")
 
-# Приветствие при запуске
-send_telegram("🚀 <b>Бот перезапущен!</b>\nНапиши /start для начала работы")
+# Приветствие
+send_telegram("🚀 Бот перезапущен!\nНапиши /start")
 
 # Основной цикл
 last_update_id = 0
@@ -281,10 +260,10 @@ session = None
 
 while True:
     try:
-        # Проверяем новые команды
+        # Проверяем команды
         updates = get_updates(last_update_id + 1)
         
-        if "result" in updates and updates["result"]:
+        if updates and "result" in updates and updates["result"]:
             for update in updates["result"]:
                 last_update_id = update["update_id"]
                 
@@ -297,7 +276,7 @@ while True:
                     if chat_id == CHAT_ID:
                         process_command(text)
         
-        # Если мониторинг включен - проверяем сайт
+        # Мониторинг сайта
         if settings['active']:
             current_time = time.time()
             
@@ -305,32 +284,27 @@ while True:
             if not session or current_time - last_site_check > 600:
                 session = login_to_site()
             
-            if session:
-                # Проверяем выплаты раз в 30 секунд
-                if current_time - last_site_check > 30:
-                    payouts = check_payouts(session)
-                    
-                    for payout in payouts:
-                        if payout['id'] not in accepted_ids:
-                            # Пробуем принять выплату
-                            if accept_payout(session, payout['id']):
-                                msg = f"""✅ <b>ВЫПЛАТА ПРИНЯТА!</b>
-                                
+            # Проверяем выплаты раз в 30 секунд
+            if session and current_time - last_site_check > 30:
+                payouts = check_payouts(session)
+                
+                for payout in payouts:
+                    if payout['id'] not in accepted_ids:
+                        if accept_payout(session, payout['id']):
+                            msg = f"""✅ ВЫПЛАТА ПРИНЯТА!
 ID: {payout['id']}
-Сумма: {payout['sum']} ₽
-Статус: Успешно"""
-                                send_telegram(msg)
-                                accepted_ids.add(payout['id'])
-                                
-                                # Сохраняем
-                                with open('accepted.txt', 'w') as f:
-                                    f.write('\n'.join(accepted_ids))
-                    
-                    last_site_check = current_time
-                    print(f"🔄 Проверка сайта: найдено {len(payouts)} выплат")
+Сумма: {payout['sum']} ₽"""
+                            send_telegram(msg)
+                            accepted_ids.add(payout['id'])
+                            
+                            with open('accepted.txt', 'w') as f:
+                                f.write('\n'.join(accepted_ids))
+                
+                last_site_check = current_time
+                print(f"🔄 Проверка сайта: {len(payouts)} выплат")
         
         time.sleep(2)
         
     except Exception as e:
-        print(f"❌ Ошибка в цикле: {e}")
+        print(f"❌ Ошибка: {e}")
         time.sleep(5)
